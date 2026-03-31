@@ -40,7 +40,7 @@ jobs:
       - name: Extract screenshots from test results
         if: always()
         run: |
-          pip3 install -q zstandard
+          pip3 install -q --break-system-packages zstandard
           mkdir -p Screenshots
           python3 << 'PYEOF'
           import os, zstandard
