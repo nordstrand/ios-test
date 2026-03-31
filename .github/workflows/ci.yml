@@ -29,25 +29,23 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: Export screenshots from test results
+      - name: Extract screenshots from test results
         if: always()
         run: |
           mkdir -p Screenshots
+          # Export all attachments from the xcresult bundle
           xcrun xcresulttool export attachments \
             --path TestResults.xcresult \
-            --output-path Screenshots/ || true
+            --output-path Screenshots/
+          # Flatten nested dirs and keep only PNG files at top level
+          find Screenshots -name "*.png" -not -path "Screenshots/*.png" \
+            -exec mv {} Screenshots/ \;
+          find Screenshots -mindepth 1 -type d -empty -delete
 
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: screenshots
-          path: Screenshots/
+          path: Screenshots/*.png
           if-no-files-found: warn
-
-      - name: Upload test results (xcresult)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: TestResults.xcresult
