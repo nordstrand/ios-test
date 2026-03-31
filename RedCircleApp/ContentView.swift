@@ -1,5 +1,6 @@
 import SwiftUI
 
+// Displays a red circle centered on screen
 struct ContentView: View {
     var body: some View {
         Circle()
@@ -8,3 +9,4 @@ struct ContentView: View {
             .accessibilityIdentifier("redCircle")
     }
 }
+// ci test
