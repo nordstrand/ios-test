@@ -34,63 +34,26 @@ jobs:
         run: |
           mkdir -p Screenshots
           python3 << 'PYEOF'
-          import json, subprocess, os, sys
+          import os, shutil
 
+          PNG_MAGIC = b'\x89PNG\r\n\x1a\n'
           os.makedirs("Screenshots", exist_ok=True)
-
-          # Xcode 16 changed the xcresulttool JSON format; try both
-          result = None
-          for extra in [["--legacy"], []]:
-              try:
-                  out = subprocess.check_output(
-                      ["xcrun", "xcresulttool", "get",
-                       "--path", "TestResults.xcresult",
-                       "--format", "json"] + extra,
-                      stderr=subprocess.DEVNULL)
-                  result = json.loads(out)
-                  break
-              except Exception:
-                  pass
-
-          if result is None:
-              print("ERROR: could not parse xcresult JSON", file=sys.stderr)
-              sys.exit(0)
-
-          def find_attachments(obj, found=None):
-              if found is None:
-                  found = []
-              if isinstance(obj, dict):
-                  if obj.get("_type", {}).get("_name") == "ActionTestAttachment":
-                      found.append(obj)
-                  for v in obj.values():
-                      find_attachments(v, found)
-              elif isinstance(obj, list):
-                  for item in obj:
-                      find_attachments(item, found)
-              return found
-
           count = 0
-          for i, att in enumerate(find_attachments(result)):
-              payload_id = att.get("payloadRef", {}).get("id")
-              uti = att.get("uniformTypeIdentifier", "")
-              if not payload_id or "png" not in uti:
-                  continue
-              name = att.get("name", f"screenshot_{i}").replace(" ", "_")
-              out_path = f"Screenshots/{name}_{i}.png"
-              r = subprocess.run(
-                  ["xcrun", "xcresulttool", "export",
-                   "--path", "TestResults.xcresult",
-                   "--id", payload_id,
-                   "--output-path", out_path,
-                   "--type", "file"],
-                  capture_output=True)
-              if r.returncode == 0 and os.path.exists(out_path):
-                  print(f"Exported: {out_path}")
-                  count += 1
-              else:
-                  print(f"Failed to export {out_path}: {r.stderr.decode()}", file=sys.stderr)
 
-          print(f"Total screenshots exported: {count}")
+          for root, _, files in os.walk("TestResults.xcresult"):
+              for fname in files:
+                  path = os.path.join(root, fname)
+                  try:
+                      with open(path, "rb") as fh:
+                          if fh.read(8) == PNG_MAGIC:
+                              dest = f"Screenshots/screenshot_{count}.png"
+                              shutil.copy2(path, dest)
+                              print(f"Copied: {path} -> {dest}")
+                              count += 1
+                  except Exception:
+                      pass
+
+          print(f"Total screenshots found: {count}")
           PYEOF
 
       - name: Upload screenshots
