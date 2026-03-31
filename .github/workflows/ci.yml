@@ -40,12 +40,14 @@ jobs:
       - name: Extract screenshots from test results
         if: always()
         run: |
+          pip3 install -q zstandard
           mkdir -p Screenshots
           python3 << 'PYEOF'
-          import os, shutil
+          import os, zstandard
 
           PNG_MAGIC = b'\x89PNG\r\n\x1a\n'
-          os.makedirs("Screenshots", exist_ok=True)
+          ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
+          dctx = zstandard.ZstdDecompressor()
           count = 0
 
           for root, _, files in os.walk("TestResults.xcresult"):
@@ -53,15 +55,29 @@ jobs:
                   path = os.path.join(root, fname)
                   try:
                       with open(path, "rb") as fh:
-                          if fh.read(8) == PNG_MAGIC:
-                              dest = f"Screenshots/screenshot_{count}.png"
-                              shutil.copy2(path, dest)
-                              print(f"Copied: {path} -> {dest}")
-                              count += 1
+                          raw = fh.read()
+                      # Raw PNG
+                      if raw[:8] == PNG_MAGIC:
+                          data = raw
+                      # Zstd-compressed PNG (Xcode 16 xcresult format)
+                      elif raw[:4] == ZSTD_MAGIC:
+                          try:
+                              data = dctx.decompress(raw, max_output_size=50 * 1024 * 1024)
+                          except Exception:
+                              continue
+                          if data[:8] != PNG_MAGIC:
+                              continue
+                      else:
+                          continue
+                      dest = f"Screenshots/screenshot_{count}.png"
+                      with open(dest, "wb") as out:
+                          out.write(data)
+                      print(f"Saved: {dest} (from {path})")
+                      count += 1
                   except Exception:
                       pass
 
-          print(f"Total screenshots found: {count}")
+          print(f"Total screenshots: {count}")
           PYEOF
 
       - name: Upload screenshots
