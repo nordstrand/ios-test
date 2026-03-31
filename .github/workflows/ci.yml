@@ -29,6 +29,14 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
 
+      - name: Debug xcresult contents
+        if: always()
+        run: |
+          echo "=== xcresult directory tree ==="
+          find TestResults.xcresult -type f | sort
+          echo "=== file types of first 20 files ==="
+          find TestResults.xcresult -type f | head -20 | xargs file
+
       - name: Extract screenshots from test results
         if: always()
         run: |
