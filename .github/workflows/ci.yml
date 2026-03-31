@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ui-test:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: List available simulators
+        run: xcrun simctl list devices available | grep -E "iPhone|iPad"
+
+      - name: Build and run UI tests
+        run: |
+          xcodebuild test \
+            -project RedCircleApp.xcodeproj \
+            -scheme RedCircleApp \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -resultBundlePath TestResults.xcresult \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Export screenshots from test results
+        if: always()
+        run: |
+          mkdir -p Screenshots
+          xcrun xcresulttool export attachments \
+            --path TestResults.xcresult \
+            --output-path Screenshots/ || true
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: Screenshots/
+          if-no-files-found: warn
+
+      - name: Upload test results (xcresult)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults.xcresult
