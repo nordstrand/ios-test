@@ -30,18 +30,12 @@ final class RedCircleAppUITests: XCTestCase {
         add(attachment)
     }
 
-    func testCircleBounceFrames() throws {
+    func testCircleBounceAnimation() throws {
         let circle = app.otherElements["circle"]
         XCTAssertTrue(circle.waitForExistence(timeout: 5), "Circle should be visible")
 
-        // Capture 9 frames over ~3.6s to cover the full bounce animation
-        for i in 0..<9 {
-            Thread.sleep(forTimeInterval: 0.4)
-            let screenshot = XCUIScreen.main.screenshot()
-            let attachment = XCTAttachment(screenshot: screenshot)
-            attachment.name = "bounce_frame_\(i)"
-            attachment.lifetime = .keepAlways
-            add(attachment)
-        }
+        // Verify the circle is still present after the full 3-second bounce animation
+        Thread.sleep(forTimeInterval: 3.5)
+        XCTAssertTrue(circle.exists, "Circle should still exist after animation completes")
     }
 }

@@ -26,24 +26,16 @@ jobs:
             -scheme RedCircleApp \
             -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
             -resultBundlePath TestResults.xcresult \
+            -derivedDataPath DerivedData \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: Extract screenshots from test results
+      - name: Extract screenshot from test results
         if: always()
         run: |
           pip3 install -q --break-system-packages zstandard
           mkdir -p Screenshots
-
-          # Debug: show xcresult file inventory
-          echo "=== xcresult files ==="
-          find TestResults.xcresult -type f | sort | while read f; do
-            size=$(wc -c < "$f")
-            header=$(xxd -l 8 "$f" 2>/dev/null | head -1 || echo "?")
-            echo "  $size  $f  |  $header"
-          done
-
           python3 << 'PYEOF'
           import os, zstandard
 
@@ -63,39 +55,86 @@ jobs:
                       if raw[:4] == ZSTD_MAGIC:
                           try:
                               data = dctx.decompress(raw, max_output_size=500 * 1024 * 1024)
-                          except Exception as e:
-                              print(f"ZSTD FAIL {path}: {e}")
+                          except Exception:
                               continue
-                      first8 = data[:8].hex()
                       if data[:8] == PNG_MAGIC:
                           dest = f"Screenshots/screenshot_{pngs:03d}.png"
                           with open(dest, "wb") as f: f.write(data)
-                          print(f"PNG -> {dest}  (from {path}, {len(data)} bytes)")
+                          print(f"PNG: {dest} ({len(data)} bytes)")
                           pngs += 1
-                      else:
-                          print(f"SKIP {path} header={first8} size={len(data)}")
-                  except Exception as e:
-                      print(f"ERROR {path}: {e}")
+                  except Exception:
+                      pass
 
-          print(f"Total PNGs: {pngs}")
+          print(f"Total PNGs from xcresult: {pngs}")
           PYEOF
 
-      - name: Create animated GIF from bounce frames
+      - name: Capture bounce animation frames via simctl
         if: always()
         run: |
-          cd Screenshots
-          frame_count=$(ls screenshot_*.png 2>/dev/null | wc -l | tr -d ' ')
-          echo "Found $frame_count PNG frames"
-          if [ "$frame_count" -gt 1 ]; then
-            ffmpeg -framerate 3 -pattern_type glob -i 'screenshot_*.png' \
+          mkdir -p Screenshots/frames
+
+          # Find the built simulator app bundle
+          APP=$(find DerivedData -name "RedCircleApp.app" -type d \
+                -path "*/Debug-iphonesimulator/*" 2>/dev/null | head -1)
+          if [ -z "$APP" ]; then
+            echo "RedCircleApp.app not found in DerivedData, skipping"
+            exit 0
+          fi
+          echo "App bundle: $APP"
+
+          # Find iPhone 16 simulator UDID
+          DEVICE=$(python3 - <<'PYEOF'
+          import subprocess, re
+          out = subprocess.check_output(['xcrun','simctl','list','devices','available']).decode()
+          for line in out.split('\n'):
+              if 'iPhone 16 (' in line and not any(x in line for x in ['Plus','Pro','Max','mini']):
+                  m = re.search(r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}', line)
+                  if m:
+                      print(m.group())
+                      break
+          PYEOF
+          )
+          echo "Device: $DEVICE"
+
+          # Boot simulator and wait
+          xcrun simctl boot "$DEVICE" 2>/dev/null || true
+          xcrun simctl bootstatus "$DEVICE" -b
+
+          # Install the app
+          xcrun simctl install "$DEVICE" "$APP"
+          echo "App installed"
+
+          # Launch app — onAppear fires, starting the bounce animation
+          xcrun simctl launch "$DEVICE" com.example.RedCircleApp
+          echo "App launched"
+
+          # Capture 9 frames at 0.4s intervals (covers the 3s animation)
+          for i in $(seq 0 8); do
+            sleep 0.4
+            xcrun simctl io "$DEVICE" screenshot \
+              "Screenshots/frames/frame_$(printf '%03d' $i).png" 2>/dev/null \
+              && echo "Frame $i captured" \
+              || echo "Frame $i failed"
+          done
+
+          echo "=== Captured frames ==="
+          ls -lh Screenshots/frames/ 2>/dev/null || echo "none"
+
+      - name: Create animated GIF from frames
+        if: always()
+        run: |
+          if ls Screenshots/frames/frame_*.png 1>/dev/null 2>&1; then
+            frame_count=$(ls Screenshots/frames/frame_*.png | wc -l | tr -d ' ')
+            echo "Creating GIF from $frame_count frames"
+            ffmpeg -framerate 3 -pattern_type glob \
+              -i 'Screenshots/frames/frame_*.png' \
               -vf "scale=400:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
-              -loop 0 bounce.gif \
-              && echo "Created bounce.gif ($(wc -c < bounce.gif) bytes)" \
+              -loop 0 Screenshots/bounce.gif \
+              && echo "Created bounce.gif ($(wc -c < Screenshots/bounce.gif) bytes)" \
               || echo "ffmpeg failed"
           else
-            echo "Only $frame_count PNG(s), skipping GIF creation"
+            echo "No frames found, skipping GIF"
           fi
-          cd ..
 
       - name: Upload artifacts
         if: always()
@@ -105,6 +144,7 @@ jobs:
           path: |
             Screenshots/*.png
             Screenshots/*.gif
+            Screenshots/frames/*.png
           if-no-files-found: warn
 
       - name: Post media comment on PR
@@ -118,18 +158,15 @@ jobs:
             const prNumber = context.payload.pull_request.number;
             const branch = 'ci-screenshots';
 
-            // Post the GIF if available, otherwise the last PNG
-            const allFiles = fs.existsSync('Screenshots')
-              ? fs.readdirSync('Screenshots').sort()
+            const gif = fs.existsSync('Screenshots/bounce.gif') ? 'bounce.gif' : null;
+            const pngs = fs.existsSync('Screenshots')
+              ? fs.readdirSync('Screenshots').filter(f => f.endsWith('.png')).sort()
               : [];
-            const gif = allFiles.find(f => f.endsWith('.gif'));
-            const pngs = allFiles.filter(f => f.endsWith('.png'));
-            // Last PNG alphabetically is the screenshot from testCircleScreenshot
-            const staticShot = pngs[pngs.length - 1];
+            const staticShot = pngs[pngs.length - 1] ?? null;
             const media = [gif, staticShot].filter(Boolean);
 
-            console.log('GIF:', gif, '  Static shot:', staticShot);
-            if (!media.length) { console.log('No media found'); return; }
+            console.log('GIF:', gif, '  Static:', staticShot, '  All PNGs:', pngs);
+            if (!media.length) { console.log('No media'); return; }
 
             // Ensure ci-screenshots branch exists
             try {
@@ -139,7 +176,6 @@ jobs:
               await github.rest.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: main.data.commit.sha });
             }
 
-            // Upload each file to ci-screenshots/pr-{N}/
             const urls = [];
             for (const fname of media) {
               const content = fs.readFileSync(`Screenshots/${fname}`).toString('base64');
