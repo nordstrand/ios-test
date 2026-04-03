@@ -26,64 +26,9 @@ jobs:
             -scheme RedCircleApp \
             -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
             -resultBundlePath TestResults.xcresult \
-            -derivedDataPath DerivedData \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
-
-      - name: Record bounce animation
-        if: always()
-        run: |
-          mkdir -p Videos
-
-          # Find the built simulator app
-          APP_PATH=$(find DerivedData -name "RedCircleApp.app" -type d -path "*/Debug-iphonesimulator/*" 2>/dev/null | head -1)
-          if [ -z "$APP_PATH" ]; then
-            echo "Could not find RedCircleApp.app in DerivedData, skipping recording"
-            exit 0
-          fi
-          echo "App: $APP_PATH"
-
-          # Find iPhone 16 simulator UDID
-          DEVICE_ID=$(xcrun simctl list devices available | python3 -c "
-          import sys, re
-          for line in sys.stdin:
-              if 'iPhone 16 (' in line and not any(x in line for x in ['Plus','Pro','Max','mini']):
-                  m = re.search(r'([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})', line)
-                  if m:
-                      print(m.group(1))
-                      break
-          ")
-          echo "Device: $DEVICE_ID"
-
-          # Boot and wait
-          xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
-          xcrun simctl bootstatus "$DEVICE_ID" -b
-
-          # Install app
-          xcrun simctl install "$DEVICE_ID" "$APP_PATH"
-          echo "Installed app"
-
-          # Start recording
-          xcrun simctl io "$DEVICE_ID" recordVideo --type mp4 Videos/bounce.mp4 &
-          RECORD_PID=$!
-          echo "Recording PID: $RECORD_PID"
-          sleep 1
-
-          # Launch app (triggers onAppear bounce animation)
-          xcrun simctl launch "$DEVICE_ID" com.example.RedCircleApp
-          echo "Launched app"
-
-          # Wait for animation (3s + margin)
-          sleep 4
-
-          # Stop recording and wait for file to be written
-          kill -INT $RECORD_PID 2>/dev/null || true
-          wait $RECORD_PID 2>/dev/null || true
-          sleep 1
-
-          echo "=== Videos ==="
-          ls -lh Videos/ 2>/dev/null || echo "empty"
 
       - name: Extract screenshots from test results
         if: always()
@@ -112,29 +57,32 @@ jobs:
                           except Exception:
                               continue
                       if data[:8] == PNG_MAGIC:
-                          dest = f"Screenshots/screenshot_{pngs}.png"
+                          dest = f"Screenshots/screenshot_{pngs:03d}.png"
                           with open(dest, "wb") as f: f.write(data)
                           print(f"PNG: {dest}")
                           pngs += 1
                   except Exception:
                       pass
 
-          print(f"PNGs: {pngs}")
+          print(f"Total PNGs: {pngs}")
           PYEOF
 
-      - name: Convert bounce video to GIF
+      - name: Create animated GIF from bounce frames
         if: always()
         run: |
-          if [ -f "Videos/bounce.mp4" ]; then
-            echo "bounce.mp4 size: $(wc -c < Videos/bounce.mp4) bytes"
-            ffmpeg -i Videos/bounce.mp4 \
-              -vf "fps=12,scale=400:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
-              -loop 0 Screenshots/bounce.gif \
-              && echo "Created bounce.gif ($(wc -c < Screenshots/bounce.gif) bytes)" \
-              || echo "ffmpeg conversion failed"
+          cd Screenshots
+          frame_count=$(ls screenshot_*.png 2>/dev/null | wc -l | tr -d ' ')
+          echo "Found $frame_count PNG frames"
+          if [ "$frame_count" -gt 1 ]; then
+            ffmpeg -framerate 3 -pattern_type glob -i 'screenshot_*.png' \
+              -vf "scale=400:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
+              -loop 0 bounce.gif \
+              && echo "Created bounce.gif ($(wc -c < bounce.gif) bytes)" \
+              || echo "ffmpeg failed"
           else
-            echo "No bounce.mp4 found"
+            echo "Only $frame_count PNG(s), skipping GIF creation"
           fi
+          cd ..
 
       - name: Upload artifacts
         if: always()
@@ -152,17 +100,23 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            console.log('event:', context.eventName);
             const MARKER = '<!-- ci-screenshots -->';
             const { owner, repo } = context.repo;
             const prNumber = context.payload.pull_request.number;
             const branch = 'ci-screenshots';
 
-            const media = fs.existsSync('Screenshots')
-              ? fs.readdirSync('Screenshots').filter(f => f.endsWith('.png') || f.endsWith('.gif'))
+            // Post the GIF if available, otherwise the last PNG
+            const allFiles = fs.existsSync('Screenshots')
+              ? fs.readdirSync('Screenshots').sort()
               : [];
-            console.log('Media files:', media);
-            if (!media.length) { console.log('No media'); return; }
+            const gif = allFiles.find(f => f.endsWith('.gif'));
+            const pngs = allFiles.filter(f => f.endsWith('.png'));
+            // Last PNG alphabetically is the screenshot from testCircleScreenshot
+            const staticShot = pngs[pngs.length - 1];
+            const media = [gif, staticShot].filter(Boolean);
+
+            console.log('GIF:', gif, '  Static shot:', staticShot);
+            if (!media.length) { console.log('No media found'); return; }
 
             // Ensure ci-screenshots branch exists
             try {

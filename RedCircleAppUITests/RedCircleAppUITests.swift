@@ -30,12 +30,18 @@ final class RedCircleAppUITests: XCTestCase {
         add(attachment)
     }
 
-    func testCircleBounceVideo() throws {
+    func testCircleBounceFrames() throws {
         let circle = app.otherElements["circle"]
         XCTAssertTrue(circle.waitForExistence(timeout: 5), "Circle should be visible")
 
-        // Wait for the full bounce animation (3 bounces × 0.5s × 2 = 3s)
-        // CI records the simulator screen externally via xcrun simctl io recordVideo
-        Thread.sleep(forTimeInterval: 3.5)
+        // Capture 9 frames over ~3.6s to cover the full bounce animation
+        for i in 0..<9 {
+            Thread.sleep(forTimeInterval: 0.4)
+            let screenshot = XCUIScreen.main.screenshot()
+            let attachment = XCTAttachment(screenshot: screenshot)
+            attachment.name = "bounce_frame_\(i)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
     }
 }
