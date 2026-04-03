@@ -123,24 +123,26 @@ jobs:
       - name: Create animated GIF from frames
         if: always()
         run: |
+          # Debug: write filesystem state
+          {
+            echo "=== Screenshots/ ==="
+            ls -lh Screenshots/ 2>&1
+            echo "=== Screenshots/frames/ ==="
+            ls -lh Screenshots/frames/ 2>&1
+          } | tee Screenshots/debug.txt
+
           if ls Screenshots/frames/frame_*.png 1>/dev/null 2>&1; then
             frame_count=$(ls Screenshots/frames/frame_*.png | wc -l | tr -d ' ')
-            echo "Creating GIF from $frame_count frames (printf-style, two-pass palette)"
-            # Pass 1: generate palette
+            echo "Creating GIF from $frame_count frames" | tee -a Screenshots/debug.txt
+            # Minimal: direct GIF conversion without palette (most compatible)
             ffmpeg -y -framerate 3 -i 'Screenshots/frames/frame_%03d.png' \
-              -vf "fps=3,scale=400:-1:flags=lanczos,palettegen=max_colors=256" \
-              /tmp/palette.png \
-              && echo "Palette generated" \
-              || { echo "Palette generation failed"; exit 0; }
-            # Pass 2: create GIF using palette
-            ffmpeg -y -framerate 3 -i 'Screenshots/frames/frame_%03d.png' \
-              -i /tmp/palette.png \
-              -filter_complex "fps=3,scale=400:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer" \
-              -loop 0 Screenshots/bounce.gif \
-              && echo "Created bounce.gif ($(wc -c < Screenshots/bounce.gif) bytes)" \
-              || echo "GIF creation failed"
+              -vf "scale=400:-1:flags=lanczos" \
+              -loop 0 Screenshots/bounce.gif 2>&1 | tail -5 | tee -a Screenshots/debug.txt \
+              && echo "SUCCESS: bounce.gif created" | tee -a Screenshots/debug.txt \
+              || echo "FAILED: ffmpeg exited with error" | tee -a Screenshots/debug.txt
+            ls -lh Screenshots/bounce.gif 2>/dev/null | tee -a Screenshots/debug.txt || echo "bounce.gif not found" | tee -a Screenshots/debug.txt
           else
-            echo "No frames found, skipping GIF"
+            echo "No frames in Screenshots/frames/, skipping GIF" | tee -a Screenshots/debug.txt
           fi
 
       - name: Upload artifacts
@@ -202,8 +204,13 @@ jobs:
               urls.push({ name: fname, url: `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath}` });
             }
 
+            const debugInfo = fs.existsSync('Screenshots/debug.txt')
+              ? fs.readFileSync('Screenshots/debug.txt', 'utf8').trim()
+              : 'no debug.txt';
+
             const body = `${MARKER}\n## UI Test Media\n\n` +
-              urls.map(({ name, url }) => `**${name}**\n![${name}](${url})`).join('\n\n');
+              urls.map(({ name, url }) => `**${name}**\n![${name}](${url})`).join('\n\n') +
+              `\n\n<details><summary>Debug</summary>\n\n\`\`\`\n${debugInfo}\n\`\`\`\n</details>`;
 
             const { data: comments } = await github.rest.issues.listComments({
               owner, repo, issue_number: prNumber
