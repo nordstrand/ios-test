@@ -34,7 +34,8 @@ jobs:
         if: always()
         run: |
           mkdir -p Videos
-          # Check if a simulator is still booted
+          echo "=== Booted simulators ==="
+          xcrun simctl list devices | grep Booted || echo "None"
           if ! xcrun simctl list devices | grep -q "(Booted)"; then
             echo "No booted simulator, skipping recording"
             exit 0
@@ -42,18 +43,20 @@ jobs:
           # Start screen recording
           xcrun simctl io booted recordVideo --type mp4 Videos/bounce.mp4 &
           RECORD_PID=$!
-          sleep 0.5
+          echo "Recording PID: $RECORD_PID"
+          sleep 1
           # Relaunch the app to trigger the bounce animation from the start
           xcrun simctl terminate booted com.example.RedCircleApp 2>/dev/null || true
-          sleep 0.3
-          xcrun simctl launch booted com.example.RedCircleApp
+          sleep 0.5
+          xcrun simctl launch booted com.example.RedCircleApp && echo "App launched" || echo "Launch failed"
           # Wait for the animation to complete (3s animation + margin)
           sleep 4
-          # Stop recording and wait for file to finalise
-          kill -SIGINT $RECORD_PID 2>/dev/null || true
-          sleep 2
-          echo "Recording complete:"
-          ls -lh Videos/bounce.mp4 2>/dev/null || echo "bounce.mp4 not found"
+          # Stop recording with INT signal and wait for process to exit
+          kill -INT $RECORD_PID 2>/dev/null || true
+          wait $RECORD_PID 2>/dev/null || true
+          sleep 1
+          echo "=== Videos directory ==="
+          ls -lh Videos/ 2>/dev/null || echo "empty"
 
       - name: Extract screenshots from test results
         if: always()
@@ -121,6 +124,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
+            console.log('event:', context.eventName, 'ref:', context.ref);
             const MARKER = '<!-- ci-screenshots -->';
             const { owner, repo } = context.repo;
             const prNumber = context.payload.pull_request.number;
