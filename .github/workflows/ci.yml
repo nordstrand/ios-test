@@ -123,26 +123,23 @@ jobs:
       - name: Create animated GIF from frames
         if: always()
         run: |
-          # Debug: write filesystem state
-          {
-            echo "=== Screenshots/ ==="
-            ls -lh Screenshots/ 2>&1
-            echo "=== Screenshots/frames/ ==="
-            ls -lh Screenshots/frames/ 2>&1
-          } | tee Screenshots/debug.txt
+          # Ensure ffmpeg is available
+          if ! command -v ffmpeg &>/dev/null; then
+            echo "ffmpeg not in PATH, installing via brew"
+            brew install ffmpeg
+          fi
+          echo "ffmpeg: $(which ffmpeg)"
 
           if ls Screenshots/frames/frame_*.png 1>/dev/null 2>&1; then
             frame_count=$(ls Screenshots/frames/frame_*.png | wc -l | tr -d ' ')
-            echo "Creating GIF from $frame_count frames" | tee -a Screenshots/debug.txt
-            # Minimal: direct GIF conversion without palette (most compatible)
+            echo "Creating GIF from $frame_count frames"
             ffmpeg -y -framerate 3 -i 'Screenshots/frames/frame_%03d.png' \
-              -vf "scale=400:-1:flags=lanczos" \
-              -loop 0 Screenshots/bounce.gif 2>&1 | tail -5 | tee -a Screenshots/debug.txt \
-              && echo "SUCCESS: bounce.gif created" | tee -a Screenshots/debug.txt \
-              || echo "FAILED: ffmpeg exited with error" | tee -a Screenshots/debug.txt
-            ls -lh Screenshots/bounce.gif 2>/dev/null | tee -a Screenshots/debug.txt || echo "bounce.gif not found" | tee -a Screenshots/debug.txt
+              -vf "fps=3,scale=400:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
+              -loop 0 Screenshots/bounce.gif \
+              && echo "Created bounce.gif ($(wc -c < Screenshots/bounce.gif) bytes)" \
+              || echo "ffmpeg failed"
           else
-            echo "No frames in Screenshots/frames/, skipping GIF" | tee -a Screenshots/debug.txt
+            echo "No frames found, skipping GIF"
           fi
 
       - name: Upload artifacts
@@ -204,13 +201,8 @@ jobs:
               urls.push({ name: fname, url: `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath}` });
             }
 
-            const debugInfo = fs.existsSync('Screenshots/debug.txt')
-              ? fs.readFileSync('Screenshots/debug.txt', 'utf8').trim()
-              : 'no debug.txt';
-
             const body = `${MARKER}\n## UI Test Media\n\n` +
-              urls.map(({ name, url }) => `**${name}**\n![${name}](${url})`).join('\n\n') +
-              `\n\n<details><summary>Debug</summary>\n\n\`\`\`\n${debugInfo}\n\`\`\`\n</details>`;
+              urls.map(({ name, url }) => `**${name}**\n![${name}](${url})`).join('\n\n');
 
             const { data: comments } = await github.rest.issues.listComments({
               owner, repo, issue_number: prNumber
