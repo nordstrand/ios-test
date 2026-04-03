@@ -32,18 +32,23 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: Extract screenshots from test results
+      - name: Extract screenshots and video from test results
         if: always()
         run: |
           pip3 install -q --break-system-packages zstandard
-          mkdir -p Screenshots
+          mkdir -p Screenshots Videos
           python3 << 'PYEOF'
           import os, zstandard
 
-          PNG_MAGIC = b'\x89PNG\r\n\x1a\n'
+          PNG_MAGIC  = b'\x89PNG\r\n\x1a\n'
           ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
+
+          def is_video(data):
+              # QuickTime/MP4: bytes 4-8 contain the first atom type
+              return len(data) > 8 and data[4:8] in (b'ftyp', b'moov', b'wide', b'mdat')
+
           dctx = zstandard.ZstdDecompressor()
-          count = 0
+          pngs = vids = 0
 
           for root, _, files in os.walk("TestResults.xcresult"):
               for fname in files:
@@ -51,37 +56,52 @@ jobs:
                   try:
                       with open(path, "rb") as fh:
                           raw = fh.read()
-                      if raw[:8] == PNG_MAGIC:
-                          data = raw
-                      elif raw[:4] == ZSTD_MAGIC:
+                      data = raw
+                      if raw[:4] == ZSTD_MAGIC:
                           try:
-                              data = dctx.decompress(raw, max_output_size=50 * 1024 * 1024)
+                              data = dctx.decompress(raw, max_output_size=500 * 1024 * 1024)
                           except Exception:
                               continue
-                          if data[:8] != PNG_MAGIC:
-                              continue
-                      else:
-                          continue
-                      dest = f"Screenshots/screenshot_{count}.png"
-                      with open(dest, "wb") as out:
-                          out.write(data)
-                      print(f"Saved: {dest} (from {path})")
-                      count += 1
+                      if data[:8] == PNG_MAGIC:
+                          dest = f"Screenshots/screenshot_{pngs}.png"
+                          with open(dest, "wb") as f: f.write(data)
+                          print(f"PNG: {dest}")
+                          pngs += 1
+                      elif is_video(data):
+                          dest = f"Videos/video_{vids}.mov"
+                          with open(dest, "wb") as f: f.write(data)
+                          print(f"MOV: {dest}")
+                          vids += 1
                   except Exception:
                       pass
 
-          print(f"Total screenshots: {count}")
+          print(f"PNGs: {pngs}, Videos: {vids}")
           PYEOF
 
-      - name: Upload screenshots artifact
+      - name: Convert video to GIF
+        if: always()
+        run: |
+          for f in Videos/*.mov; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f" .mov)
+            ffmpeg -i "$f" \
+              -vf "fps=12,scale=400:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
+              -loop 0 "Screenshots/${base}.gif" 2>/dev/null \
+              && echo "Created Screenshots/${base}.gif" \
+              || echo "ffmpeg failed for $f"
+          done
+
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshots
-          path: Screenshots/*.png
+          name: test-media
+          path: |
+            Screenshots/*.png
+            Screenshots/*.gif
           if-no-files-found: warn
 
-      - name: Post screenshot comment on PR
+      - name: Post media comment on PR
         if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
@@ -92,10 +112,10 @@ jobs:
             const prNumber = context.payload.pull_request.number;
             const branch = 'ci-screenshots';
 
-            const screenshots = fs.existsSync('Screenshots')
-              ? fs.readdirSync('Screenshots').filter(f => f.endsWith('.png'))
+            const media = fs.existsSync('Screenshots')
+              ? fs.readdirSync('Screenshots').filter(f => f.endsWith('.png') || f.endsWith('.gif'))
               : [];
-            if (!screenshots.length) { console.log('No screenshots'); return; }
+            if (!media.length) { console.log('No media'); return; }
 
             // Ensure ci-screenshots branch exists
             try {
@@ -105,9 +125,9 @@ jobs:
               await github.rest.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: main.data.commit.sha });
             }
 
-            // Upload each PNG to ci-screenshots/pr-{N}/
+            // Upload each file to ci-screenshots/pr-{N}/
             const urls = [];
-            for (const fname of screenshots) {
+            for (const fname of media) {
               const content = fs.readFileSync(`Screenshots/${fname}`).toString('base64');
               const filePath = `pr-${prNumber}/${fname}`;
               let sha;
@@ -118,15 +138,15 @@ jobs:
               await github.rest.repos.createOrUpdateFileContents({
                 owner, repo, branch,
                 path: filePath,
-                message: `ci: screenshots for PR #${prNumber}`,
+                message: `ci: media for PR #${prNumber}`,
                 content,
                 ...(sha && { sha })
               });
-              urls.push(`https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath}`);
+              urls.push({ name: fname, url: `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath}` });
             }
 
-            const body = `${MARKER}\n## UI Test Screenshots\n\n` +
-              urls.map((url, i) => `![screenshot_${i}](${url})`).join('\n\n');
+            const body = `${MARKER}\n## UI Test Media\n\n` +
+              urls.map(({ name, url }) => `**${name}**\n![${name}](${url})`).join('\n\n');
 
             const { data: comments } = await github.rest.issues.listComments({
               owner, repo, issue_number: prNumber

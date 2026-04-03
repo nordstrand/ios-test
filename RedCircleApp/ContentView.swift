@@ -1,14 +1,18 @@
 import SwiftUI
 
-// Displays a red circle centered on screen
 struct ContentView: View {
+    @State private var bouncing = false
+
     var body: some View {
         Circle()
             .fill(.green)
             .frame(width: 200, height: 200)
-            .accessibilityIdentifier("redCircle")
+            .offset(y: bouncing ? -100 : 0)
+            .animation(
+                .easeInOut(duration: 0.5).repeatCount(3, autoreverses: true),
+                value: bouncing
+            )
+            .accessibilityIdentifier("circle")
+            .onAppear { bouncing = true }
     }
 }
-// ci test
-// debug Tue Mar 31 19:30:12 UTC 2026
-// dummy

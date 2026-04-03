@@ -14,21 +14,37 @@ final class RedCircleAppUITests: XCTestCase {
         app = nil
     }
 
-    func testRedCircleIsVisible() throws {
-        let circle = app.otherElements["redCircle"]
-        XCTAssertTrue(circle.waitForExistence(timeout: 5), "Red circle should be visible on screen")
+    func testCircleIsVisible() throws {
+        let circle = app.otherElements["circle"]
+        XCTAssertTrue(circle.waitForExistence(timeout: 5), "Circle should be visible")
     }
 
-    func testRedCircleScreenshot() throws {
-        // Wait for the circle to appear
-        let circle = app.otherElements["redCircle"]
-        XCTAssertTrue(circle.waitForExistence(timeout: 5), "Red circle should be visible on screen")
+    func testCircleScreenshot() throws {
+        let circle = app.otherElements["circle"]
+        XCTAssertTrue(circle.waitForExistence(timeout: 5), "Circle should be visible")
 
-        // Take a full-screen screenshot and attach it to the test report
         let screenshot = XCUIScreen.main.screenshot()
         let attachment = XCTAttachment(screenshot: screenshot)
-        attachment.name = "Red Circle Screenshot"
+        attachment.name = "Circle Screenshot"
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    func testCircleBounceVideo() throws {
+        let circle = app.otherElements["circle"]
+        XCTAssertTrue(circle.waitForExistence(timeout: 5), "Circle should be visible")
+
+        // Record the 3-second bounce animation
+        let recorder = XCUIScreen.main.recordVideo()
+        Thread.sleep(forTimeInterval: 3.5)
+
+        let done = expectation(description: "recording-stopped")
+        recorder.stop { attachment in
+            attachment.name = "Circle Bounce"
+            attachment.lifetime = .keepAlways
+            self.add(attachment)
+            done.fulfill()
+        }
+        waitForExpectations(timeout: 10)
     }
 }
