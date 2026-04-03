@@ -14,21 +14,28 @@ final class RedCircleAppUITests: XCTestCase {
         app = nil
     }
 
-    func testRedCircleIsVisible() throws {
-        let circle = app.otherElements["redCircle"]
-        XCTAssertTrue(circle.waitForExistence(timeout: 5), "Red circle should be visible on screen")
+    func testCircleIsVisible() throws {
+        let circle = app.otherElements["circle"]
+        XCTAssertTrue(circle.waitForExistence(timeout: 5), "Circle should be visible")
     }
 
-    func testRedCircleScreenshot() throws {
-        // Wait for the circle to appear
-        let circle = app.otherElements["redCircle"]
-        XCTAssertTrue(circle.waitForExistence(timeout: 5), "Red circle should be visible on screen")
+    func testCircleScreenshot() throws {
+        let circle = app.otherElements["circle"]
+        XCTAssertTrue(circle.waitForExistence(timeout: 5), "Circle should be visible")
 
-        // Take a full-screen screenshot and attach it to the test report
         let screenshot = XCUIScreen.main.screenshot()
         let attachment = XCTAttachment(screenshot: screenshot)
-        attachment.name = "Red Circle Screenshot"
+        attachment.name = "Circle Screenshot"
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    func testCircleBounceAnimation() throws {
+        let circle = app.otherElements["circle"]
+        XCTAssertTrue(circle.waitForExistence(timeout: 5), "Circle should be visible")
+
+        // Verify the circle is still present after the full 3-second bounce animation
+        Thread.sleep(forTimeInterval: 3.5)
+        XCTAssertTrue(circle.exists, "Circle should still exist after animation completes")
     }
 }

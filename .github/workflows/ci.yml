@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+    types: [opened, synchronize, reopened]
 
 jobs:
   ui-test:
@@ -18,9 +19,6 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: List available simulators
-        run: xcrun simctl list devices available | grep -E "iPhone|iPad"
-
       - name: Build and run UI tests
         run: |
           xcodebuild test \
@@ -28,11 +26,12 @@ jobs:
             -scheme RedCircleApp \
             -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
             -resultBundlePath TestResults.xcresult \
+            -derivedDataPath DerivedData \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: Extract screenshots from test results
+      - name: Extract screenshot from test results
         if: always()
         run: |
           pip3 install -q --break-system-packages zstandard
@@ -40,48 +39,121 @@ jobs:
           python3 << 'PYEOF'
           import os, zstandard
 
-          PNG_MAGIC = b'\x89PNG\r\n\x1a\n'
+          PNG_MAGIC  = b'\x89PNG\r\n\x1a\n'
           ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
+
           dctx = zstandard.ZstdDecompressor()
-          count = 0
+          pngs = 0
 
           for root, _, files in os.walk("TestResults.xcresult"):
-              for fname in files:
+              for fname in sorted(files):
                   path = os.path.join(root, fname)
                   try:
                       with open(path, "rb") as fh:
                           raw = fh.read()
-                      if raw[:8] == PNG_MAGIC:
-                          data = raw
-                      elif raw[:4] == ZSTD_MAGIC:
+                      data = raw
+                      if raw[:4] == ZSTD_MAGIC:
                           try:
-                              data = dctx.decompress(raw, max_output_size=50 * 1024 * 1024)
+                              data = dctx.decompress(raw, max_output_size=500 * 1024 * 1024)
                           except Exception:
                               continue
-                          if data[:8] != PNG_MAGIC:
-                              continue
-                      else:
-                          continue
-                      dest = f"Screenshots/screenshot_{count}.png"
-                      with open(dest, "wb") as out:
-                          out.write(data)
-                      print(f"Saved: {dest} (from {path})")
-                      count += 1
+                      if data[:8] == PNG_MAGIC:
+                          dest = f"Screenshots/screenshot_{pngs:03d}.png"
+                          with open(dest, "wb") as f: f.write(data)
+                          print(f"PNG: {dest} ({len(data)} bytes)")
+                          pngs += 1
                   except Exception:
                       pass
 
-          print(f"Total screenshots: {count}")
+          print(f"Total PNGs from xcresult: {pngs}")
           PYEOF
 
-      - name: Upload screenshots artifact
+      - name: Capture bounce animation frames via simctl
+        if: always()
+        run: |
+          mkdir -p Screenshots/frames
+
+          # Find the built simulator app bundle
+          APP=$(find DerivedData -name "RedCircleApp.app" -type d \
+                -path "*/Debug-iphonesimulator/*" 2>/dev/null | head -1)
+          if [ -z "$APP" ]; then
+            echo "RedCircleApp.app not found in DerivedData, skipping"
+            exit 0
+          fi
+          echo "App bundle: $APP"
+
+          # Find iPhone 16 simulator UDID
+          DEVICE=$(python3 - <<'PYEOF'
+          import subprocess, re
+          out = subprocess.check_output(['xcrun','simctl','list','devices','available']).decode()
+          for line in out.split('\n'):
+              if 'iPhone 16 (' in line and not any(x in line for x in ['Plus','Pro','Max','mini']):
+                  m = re.search(r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}', line)
+                  if m:
+                      print(m.group())
+                      break
+          PYEOF
+          )
+          echo "Device: $DEVICE"
+
+          # Boot simulator and wait
+          xcrun simctl boot "$DEVICE" 2>/dev/null || true
+          xcrun simctl bootstatus "$DEVICE" -b
+
+          # Install the app
+          xcrun simctl install "$DEVICE" "$APP"
+          echo "App installed"
+
+          # Launch app — onAppear fires, starting the bounce animation
+          xcrun simctl launch "$DEVICE" com.example.RedCircleApp
+          echo "App launched"
+
+          # Capture 9 frames at 0.4s intervals (covers the 3s animation)
+          for i in $(seq 0 8); do
+            sleep 0.4
+            xcrun simctl io "$DEVICE" screenshot \
+              "Screenshots/frames/frame_$(printf '%03d' $i).png" 2>/dev/null \
+              && echo "Frame $i captured" \
+              || echo "Frame $i failed"
+          done
+
+          echo "=== Captured frames ==="
+          ls -lh Screenshots/frames/ 2>/dev/null || echo "none"
+
+      - name: Create animated GIF from frames
+        if: always()
+        run: |
+          # Ensure ffmpeg is available
+          if ! command -v ffmpeg &>/dev/null; then
+            echo "ffmpeg not in PATH, installing via brew"
+            brew install ffmpeg
+          fi
+          echo "ffmpeg: $(which ffmpeg)"
+
+          if ls Screenshots/frames/frame_*.png 1>/dev/null 2>&1; then
+            frame_count=$(ls Screenshots/frames/frame_*.png | wc -l | tr -d ' ')
+            echo "Creating GIF from $frame_count frames"
+            ffmpeg -y -framerate 3 -i 'Screenshots/frames/frame_%03d.png' \
+              -vf "fps=3,scale=400:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
+              -loop 0 Screenshots/bounce.gif \
+              && echo "Created bounce.gif ($(wc -c < Screenshots/bounce.gif) bytes)" \
+              || echo "ffmpeg failed"
+          else
+            echo "No frames found, skipping GIF"
+          fi
+
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshots
-          path: Screenshots/*.png
+          name: test-media
+          path: |
+            Screenshots/*.png
+            Screenshots/*.gif
+            Screenshots/frames/*.png
           if-no-files-found: warn
 
-      - name: Post screenshot comment on PR
+      - name: Post media comment on PR
         if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
@@ -92,10 +164,15 @@ jobs:
             const prNumber = context.payload.pull_request.number;
             const branch = 'ci-screenshots';
 
-            const screenshots = fs.existsSync('Screenshots')
-              ? fs.readdirSync('Screenshots').filter(f => f.endsWith('.png'))
+            const gif = fs.existsSync('Screenshots/bounce.gif') ? 'bounce.gif' : null;
+            const pngs = fs.existsSync('Screenshots')
+              ? fs.readdirSync('Screenshots').filter(f => f.endsWith('.png')).sort()
               : [];
-            if (!screenshots.length) { console.log('No screenshots'); return; }
+            const staticShot = pngs[pngs.length - 1] ?? null;
+            const media = [gif, staticShot].filter(Boolean);
+
+            console.log('GIF:', gif, '  Static:', staticShot, '  All PNGs:', pngs);
+            if (!media.length) { console.log('No media'); return; }
 
             // Ensure ci-screenshots branch exists
             try {
@@ -105,9 +182,8 @@ jobs:
               await github.rest.git.createRef({ owner, repo, ref: `refs/heads/${branch}`, sha: main.data.commit.sha });
             }
 
-            // Upload each PNG to ci-screenshots/pr-{N}/
             const urls = [];
-            for (const fname of screenshots) {
+            for (const fname of media) {
               const content = fs.readFileSync(`Screenshots/${fname}`).toString('base64');
               const filePath = `pr-${prNumber}/${fname}`;
               let sha;
@@ -118,15 +194,15 @@ jobs:
               await github.rest.repos.createOrUpdateFileContents({
                 owner, repo, branch,
                 path: filePath,
-                message: `ci: screenshots for PR #${prNumber}`,
+                message: `ci: media for PR #${prNumber}`,
                 content,
                 ...(sha && { sha })
               });
-              urls.push(`https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath}`);
+              urls.push({ name: fname, url: `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath}` });
             }
 
-            const body = `${MARKER}\n## UI Test Screenshots\n\n` +
-              urls.map((url, i) => `![screenshot_${i}](${url})`).join('\n\n');
+            const body = `${MARKER}\n## UI Test Media\n\n` +
+              urls.map(({ name, url }) => `**${name}**\n![${name}](${url})`).join('\n\n');
 
             const { data: comments } = await github.rest.issues.listComments({
               owner, repo, issue_number: prNumber
