@@ -26,6 +26,7 @@ jobs:
             -scheme RedCircleApp \
             -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
             -resultBundlePath TestResults.xcresult \
+            -derivedDataPath DerivedData \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
@@ -34,28 +35,54 @@ jobs:
         if: always()
         run: |
           mkdir -p Videos
-          echo "=== Booted simulators ==="
-          xcrun simctl list devices | grep Booted || echo "None"
-          if ! xcrun simctl list devices | grep -q "(Booted)"; then
-            echo "No booted simulator, skipping recording"
+
+          # Find the built simulator app
+          APP_PATH=$(find DerivedData -name "RedCircleApp.app" -type d -path "*/Debug-iphonesimulator/*" 2>/dev/null | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Could not find RedCircleApp.app in DerivedData, skipping recording"
             exit 0
           fi
-          # Start screen recording
-          xcrun simctl io booted recordVideo --type mp4 Videos/bounce.mp4 &
+          echo "App: $APP_PATH"
+
+          # Find iPhone 16 simulator UDID
+          DEVICE_ID=$(xcrun simctl list devices available | python3 -c "
+          import sys, re
+          for line in sys.stdin:
+              if 'iPhone 16 (' in line and not any(x in line for x in ['Plus','Pro','Max','mini']):
+                  m = re.search(r'([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})', line)
+                  if m:
+                      print(m.group(1))
+                      break
+          ")
+          echo "Device: $DEVICE_ID"
+
+          # Boot and wait
+          xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+
+          # Install app
+          xcrun simctl install "$DEVICE_ID" "$APP_PATH"
+          echo "Installed app"
+
+          # Start recording
+          xcrun simctl io "$DEVICE_ID" recordVideo --type mp4 Videos/bounce.mp4 &
           RECORD_PID=$!
           echo "Recording PID: $RECORD_PID"
           sleep 1
-          # Relaunch the app to trigger the bounce animation from the start
-          xcrun simctl terminate booted com.example.RedCircleApp 2>/dev/null || true
-          sleep 0.5
-          xcrun simctl launch booted com.example.RedCircleApp && echo "App launched" || echo "Launch failed"
-          # Wait for the animation to complete (3s animation + margin)
+
+          # Launch app (triggers onAppear bounce animation)
+          xcrun simctl launch "$DEVICE_ID" com.example.RedCircleApp
+          echo "Launched app"
+
+          # Wait for animation (3s + margin)
           sleep 4
-          # Stop recording with INT signal and wait for process to exit
+
+          # Stop recording and wait for file to be written
           kill -INT $RECORD_PID 2>/dev/null || true
           wait $RECORD_PID 2>/dev/null || true
           sleep 1
-          echo "=== Videos directory ==="
+
+          echo "=== Videos ==="
           ls -lh Videos/ 2>/dev/null || echo "empty"
 
       - name: Extract screenshots from test results
@@ -99,13 +126,14 @@ jobs:
         if: always()
         run: |
           if [ -f "Videos/bounce.mp4" ]; then
+            echo "bounce.mp4 size: $(wc -c < Videos/bounce.mp4) bytes"
             ffmpeg -i Videos/bounce.mp4 \
               -vf "fps=12,scale=400:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
               -loop 0 Screenshots/bounce.gif \
-              && echo "Created bounce.gif" \
+              && echo "Created bounce.gif ($(wc -c < Screenshots/bounce.gif) bytes)" \
               || echo "ffmpeg conversion failed"
           else
-            echo "No bounce.mp4 to convert"
+            echo "No bounce.mp4 found"
           fi
 
       - name: Upload artifacts
@@ -124,7 +152,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            console.log('event:', context.eventName, 'ref:', context.ref);
+            console.log('event:', context.eventName);
             const MARKER = '<!-- ci-screenshots -->';
             const { owner, repo } = context.repo;
             const prNumber = context.payload.pull_request.number;
@@ -133,6 +161,7 @@ jobs:
             const media = fs.existsSync('Screenshots')
               ? fs.readdirSync('Screenshots').filter(f => f.endsWith('.png') || f.endsWith('.gif'))
               : [];
+            console.log('Media files:', media);
             if (!media.length) { console.log('No media'); return; }
 
             // Ensure ci-screenshots branch exists
