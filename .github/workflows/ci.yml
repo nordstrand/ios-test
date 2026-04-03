@@ -19,49 +19,41 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Boot simulator
-        run: |
-          DEVICE_ID=$(python3 - <<'PYEOF'
-          import subprocess, re
-          out = subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', 'available']).decode()
-          for line in out.split('\n'):
-              if 'iPhone 16 (' in line and 'Plus' not in line and 'Pro' not in line and 'Max' not in line:
-                  m = re.search(r'([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})', line)
-                  if m:
-                      print(m.group(1))
-                      break
-          PYEOF
-          )
-          echo "DEVICE_ID=$DEVICE_ID" >> $GITHUB_ENV
-          echo "Booting simulator: $DEVICE_ID"
-          xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
-          xcrun simctl bootstatus "$DEVICE_ID" -b
-
-      - name: Start screen recording
-        run: |
-          mkdir -p Videos
-          xcrun simctl io "$DEVICE_ID" recordVideo --type mp4 Videos/bounce.mp4 &
-          echo "RECORD_PID=$!" >> $GITHUB_ENV
-          echo "Recording started"
-
       - name: Build and run UI tests
         run: |
           xcodebuild test \
             -project RedCircleApp.xcodeproj \
             -scheme RedCircleApp \
-            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
             -resultBundlePath TestResults.xcresult \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: Stop screen recording
+      - name: Record bounce animation
         if: always()
         run: |
-          if [ -n "$RECORD_PID" ]; then
-            kill -SIGINT "$RECORD_PID" 2>/dev/null || true
-            sleep 2
+          mkdir -p Videos
+          # Check if a simulator is still booted
+          if ! xcrun simctl list devices | grep -q "(Booted)"; then
+            echo "No booted simulator, skipping recording"
+            exit 0
           fi
+          # Start screen recording
+          xcrun simctl io booted recordVideo --type mp4 Videos/bounce.mp4 &
+          RECORD_PID=$!
+          sleep 0.5
+          # Relaunch the app to trigger the bounce animation from the start
+          xcrun simctl terminate booted com.example.RedCircleApp 2>/dev/null || true
+          sleep 0.3
+          xcrun simctl launch booted com.example.RedCircleApp
+          # Wait for the animation to complete (3s animation + margin)
+          sleep 4
+          # Stop recording and wait for file to finalise
+          kill -SIGINT $RECORD_PID 2>/dev/null || true
+          sleep 2
+          echo "Recording complete:"
+          ls -lh Videos/bounce.mp4 2>/dev/null || echo "bounce.mp4 not found"
 
       - name: Extract screenshots from test results
         if: always()
@@ -106,11 +98,11 @@ jobs:
           if [ -f "Videos/bounce.mp4" ]; then
             ffmpeg -i Videos/bounce.mp4 \
               -vf "fps=12,scale=400:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
-              -loop 0 Screenshots/bounce.gif 2>/dev/null \
+              -loop 0 Screenshots/bounce.gif \
               && echo "Created bounce.gif" \
               || echo "ffmpeg conversion failed"
           else
-            echo "No bounce.mp4 found"
+            echo "No bounce.mp4 to convert"
           fi
 
       - name: Upload artifacts
