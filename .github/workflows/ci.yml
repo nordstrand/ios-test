@@ -19,37 +19,63 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: List available simulators
-        run: xcrun simctl list devices available | grep -E "iPhone|iPad"
+      - name: Boot simulator
+        run: |
+          DEVICE_ID=$(python3 - <<'PYEOF'
+          import subprocess, re
+          out = subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', 'available']).decode()
+          for line in out.split('\n'):
+              if 'iPhone 16 (' in line and 'Plus' not in line and 'Pro' not in line and 'Max' not in line:
+                  m = re.search(r'([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})', line)
+                  if m:
+                      print(m.group(1))
+                      break
+          PYEOF
+          )
+          echo "DEVICE_ID=$DEVICE_ID" >> $GITHUB_ENV
+          echo "Booting simulator: $DEVICE_ID"
+          xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+
+      - name: Start screen recording
+        run: |
+          mkdir -p Videos
+          xcrun simctl io "$DEVICE_ID" recordVideo --type mp4 Videos/bounce.mp4 &
+          echo "RECORD_PID=$!" >> $GITHUB_ENV
+          echo "Recording started"
 
       - name: Build and run UI tests
         run: |
           xcodebuild test \
             -project RedCircleApp.xcodeproj \
             -scheme RedCircleApp \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
             -resultBundlePath TestResults.xcresult \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: Extract screenshots and video from test results
+      - name: Stop screen recording
+        if: always()
+        run: |
+          if [ -n "$RECORD_PID" ]; then
+            kill -SIGINT "$RECORD_PID" 2>/dev/null || true
+            sleep 2
+          fi
+
+      - name: Extract screenshots from test results
         if: always()
         run: |
           pip3 install -q --break-system-packages zstandard
-          mkdir -p Screenshots Videos
+          mkdir -p Screenshots
           python3 << 'PYEOF'
           import os, zstandard
 
           PNG_MAGIC  = b'\x89PNG\r\n\x1a\n'
           ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 
-          def is_video(data):
-              # QuickTime/MP4: bytes 4-8 contain the first atom type
-              return len(data) > 8 and data[4:8] in (b'ftyp', b'moov', b'wide', b'mdat')
-
           dctx = zstandard.ZstdDecompressor()
-          pngs = vids = 0
+          pngs = 0
 
           for root, _, files in os.walk("TestResults.xcresult"):
               for fname in files:
@@ -68,29 +94,24 @@ jobs:
                           with open(dest, "wb") as f: f.write(data)
                           print(f"PNG: {dest}")
                           pngs += 1
-                      elif is_video(data):
-                          dest = f"Videos/video_{vids}.mov"
-                          with open(dest, "wb") as f: f.write(data)
-                          print(f"MOV: {dest}")
-                          vids += 1
                   except Exception:
                       pass
 
-          print(f"PNGs: {pngs}, Videos: {vids}")
+          print(f"PNGs: {pngs}")
           PYEOF
 
-      - name: Convert video to GIF
+      - name: Convert bounce video to GIF
         if: always()
         run: |
-          for f in Videos/*.mov; do
-            [ -f "$f" ] || continue
-            base=$(basename "$f" .mov)
-            ffmpeg -i "$f" \
+          if [ -f "Videos/bounce.mp4" ]; then
+            ffmpeg -i Videos/bounce.mp4 \
               -vf "fps=12,scale=400:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
-              -loop 0 "Screenshots/${base}.gif" 2>/dev/null \
-              && echo "Created Screenshots/${base}.gif" \
-              || echo "ffmpeg failed for $f"
-          done
+              -loop 0 Screenshots/bounce.gif 2>/dev/null \
+              && echo "Created bounce.gif" \
+              || echo "ffmpeg conversion failed"
+          else
+            echo "No bounce.mp4 found"
+          fi
 
       - name: Upload artifacts
         if: always()

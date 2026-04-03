@@ -34,17 +34,8 @@ final class RedCircleAppUITests: XCTestCase {
         let circle = app.otherElements["circle"]
         XCTAssertTrue(circle.waitForExistence(timeout: 5), "Circle should be visible")
 
-        // Record the 3-second bounce animation
-        let recorder = XCUIScreen.main.recordVideo()
+        // Wait for the full bounce animation (3 bounces × 0.5s × 2 = 3s)
+        // CI records the simulator screen externally via xcrun simctl io recordVideo
         Thread.sleep(forTimeInterval: 3.5)
-
-        let done = expectation(description: "recording-stopped")
-        recorder.stop { attachment in
-            attachment.name = "Circle Bounce"
-            attachment.lifetime = .keepAlways
-            self.add(attachment)
-            done.fulfill()
-        }
-        waitForExpectations(timeout: 10)
     }
 }
